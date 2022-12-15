@@ -1,65 +1,14 @@
 import itertools
 import json
-from typing import Any, Optional
+from typing import Optional
 
 import pydantic
 import requests
 import rhino3dm
-from pydantic import BaseModel
-from pydantic import ConstrainedStr
-
 from collection.multi_description import MultiDescriptor
-from conversions import rhino
 
-
-class SnakeCaseName(ConstrainedStr):
-    strip_whitespace = True
-    to_upper = False
-    to_lower = True
-    min_length: int | None = None
-    max_length: int | None = None
-    curtail_length: int | None = None
-    regex: int | None = None
-    strict = False
-
-
-class Attributes(BaseModel):
-    name: SnakeCaseName
-
-
-class RhinoVersion(int):
-    def __new__(cls, v):
-        return int.__new__(cls, 70)
-
-
-class RhinoBase64str(str):
-    def __repr__(self):
-        return str.__repr__(self)[:10] + " ... " + str.__repr__(self)[-10:]
-
-    def __str__(self):
-        return self.__repr__()
-
-
-class Archive3dm(pydantic.BaseModel):
-    opennurbs: int
-    version: int
-    archive3dm: RhinoVersion
-    data: str
-
-    @classmethod
-    def from_3dm(cls, data3dm) -> 'Archive3dm':
-        return cls(**rhino.RhinoEncoder().default(data3dm))
-
-    def to_3dm(self) -> dict | rhino3dm.CommonObject | Any:
-        return rhino.RhinoDecoder().decode(self.data)
-
-    def __repr__(self):
-        ss = super().__repr__().split("data")
-        return ss[0] + "data: ... ')"
-
-    def __str__(self):
-        ss = super().__str__().split("data")
-        return ss[0] + "data: ... ')"
+from mm.conversions import rhino
+from mm.pydantic_mm.models import Archive3dm, ComputeRequest, DataTreeParam, InnerTreeItem
 
 
 class Grid(list[list[Archive3dm]]):
@@ -107,21 +56,6 @@ class ComputeInputArchive(pydantic.BaseModel):
     attributes: RequestAttributes
 
 
-class InnerTreeItem(pydantic.BaseModel):
-    type: str
-    data: str
-
-
-class DTreeParam(pydantic.BaseModel):
-    ParamName: str
-    InnerTree: dict[str, list[InnerTreeItem]]
-
-
-class ComputeStuff(pydantic.BaseModel):
-    pointer: str
-    values: list[DTreeParam]
-
-
 def openarchive(path="/Users/andrewastakhov/PycharmProjects/mmodel/tests/data/L2-triangles.json"):
     with open(path, "r") as f:
         jdt = json.load(f)
@@ -129,10 +63,10 @@ def openarchive(path="/Users/andrewastakhov/PycharmProjects/mmodel/tests/data/L2
         return [Archive3dm(**r) for r in jdt]
 
 
-req = ComputeStuff(
+req = ComputeRequest(
     pointer="c:/users/administrator/compute-deploy/match.gh",
     values=[
-        DTreeParam(
+        DataTreeParam(
             ParamName="input",
             InnerTree={
                 "0": [
@@ -158,7 +92,6 @@ req = ComputeStuff(
             }
         )
     ]
-
 )
 
 
@@ -181,7 +114,7 @@ binded = MultiDescriptor(data)
 geom = rhino.DecodeToCommonObject(binded["geometry"])
 
 
-def writerh(binded, geom):
+def writerh(bind_sequence, name="modeltest.3dm"):
     model = rhino3dm.File3dm()
-    [model.Objects.Add(g) for g in binded["textdot"] + geom]
-    model.Write("modeltest.3dm")
+    [model.Objects.Add(g) for g in bind_sequence["textdot"] + bind_sequence["geometry"]]
+    model.Write(name, 7)
