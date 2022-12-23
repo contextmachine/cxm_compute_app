@@ -3,13 +3,14 @@ import hashlib
 import time
 from enum import Enum
 
+import pydantic
 import redis_om
 from fastapi import FastAPI, UploadFile
 from starlette.responses import HTMLResponse
 
-from mmcore.addons import rhino
 from mmcore.baseitems import Matchable
-from mmcore.collection.multi_description import MultiDescriptor, SequenceBinder
+from mmcore.collection.multi_description import SequenceBinder
+from mmcore.utils.pydantic_mm.models import ComputeRequest, ComputeResponse, DataTreeParam, InnerTreeItem
 from mmcore.utils.redis_tools import topickle
 from models import *
 
@@ -195,7 +196,7 @@ class FlatCellingPart(Matchable):
                       "data": topickle(self),
                       "type": "pkl",
                       "metadata": {
-                          "timestamp": time.strptime()
+                          "timestamp": time.time_ns()
                       }}
                   )
         return ComputeResponse(**self._dat)
@@ -221,7 +222,7 @@ class Params(str, Enum):
     part = "part"
     types = "types"
     mask = "mask"
-    grid = "mask"
+    grid = "grid"
 
 
 class Parts(str, Enum):
@@ -264,8 +265,7 @@ async def commit(name: Params, part: Parts, data: ComputeJson | MaskArchive3dm |
 @celling.get("/solve/{part}", response_model=ComputeResponse)
 async def solve(part: Parts):
     celling_part = FlatCellingPart(part)
-
-    return celling_part.do_request()
+    celling_part.do_request()
 
 
 @celling.get("/")
