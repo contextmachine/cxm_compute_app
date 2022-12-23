@@ -1,98 +1,61 @@
 import itertools
-import json
-from typing import Optional
+import itertools
+import os
+from json import JSONEncoder
+from typing import Any
 
-import pydantic
 import requests
-import rhino3dm
 from collection.multi_description import MultiDescriptor
 
-from mm.conversions import rhino
-from mm.pydantic_mm.models import Archive3dm, ComputeRequest, DataTreeParam, InnerTreeItem
+from mmcore.addons import rhino
+from mmcore.utils.pydantic_mm.models import Archive3dm, ComputeJson
 
 
-class Grid(list[list[Archive3dm]]):
-    ...
+class NTEncoder(JSONEncoder):
+    def default(self, o):
+        if hasattr(o, "_asdict"):
+
+            return o._asdict()
+        else:
+            try:
+                return json.loads(json.dumps(self, o))
+            except Exception as err:
+                raise TypeError
+
+    def encode(self, o):
+
+        return JSONEncoder.encode(self, self.default(o))
 
 
-class FlatGrid(list[Archive3dm]):
-    ...
-
-
-class Mask3dmAttributes(pydantic.BaseModel):
-    type: str
+class MaskArchive3dm(ComputeJson):
+    type = "Rhino.Geometry.GeometryBase"
     data: list[Archive3dm]
 
     @classmethod
-    def from_file(cls, path) -> 'Mask3dmAttributes':
-        return Mask3dmAttributes(type="Rhino.Geometry.Brep",
-                                 data=[Archive3dm.from_3dm(f) for f in rhino.get_model_geometry(path)])
+    def from_file(cls, path) -> 'MaskArchive3dm':
+        return MaskArchive3dm(type="Rhino.Geometry.Brep",
+                              data=[Archive3dm.from_3dm(f) for f in rhino.get_model_geometry(path)])
 
 
-class Mask3dm(pydantic.BaseModel):
-    type: str = "Mask3dm"
-    primary: str
-    masked_type: str = "inside"
-    attributes: Mask3dmAttributes
+class GridArchive(ComputeJson):
+    type = "System.String"
+    data: list[list[Archive3dm]]
 
 
-class SpatialTypology(list[tuple[tuple[str], tuple[float, float, float]]]):
+class CellingTypes(ComputeJson):
+    type = "System.String"
+    data = list[Any]
+
     @classmethod
-    def from_file(cls, path) -> 'SpatialTypology':
-        with open(path, "r") as f:
-            data = json.load(f)
-            return SpatialTypology(list(data))
+    def from_file(cls, file) -> 'CellingTypes':
+        return CellingTypes(data=json.load(file))
 
 
-class RequestAttributes(pydantic.BaseModel):
-    masks: Optional[list[Mask3dm]]
-    types: Optional[SpatialTypology]
-    grid: Grid | FlatGrid | list[Archive3dm] | list[list[Archive3dm]]
-
-
-class ComputeInputArchive(pydantic.BaseModel):
-    type: str = "ComputeInputArchive"
-    primary: str
-    attributes: RequestAttributes
-
-
-def openarchive(path="/Users/andrewastakhov/PycharmProjects/mmodel/tests/data/L2-triangles.json"):
+def openarchive(path=".../tests/data/L2-triangles.json"):
     with open(path, "r") as f:
         jdt = json.load(f)
         MultiDescriptor(jdt)["archive3dm"] = itertools.repeat(len(jdt), 70)
         return [Archive3dm(**r) for r in jdt]
-
-
-req = ComputeRequest(
-    pointer="c:/users/administrator/compute-deploy/match.gh",
-    values=[
-        DataTreeParam(
-            ParamName="input",
-            InnerTree={
-                "0": [
-                    InnerTreeItem(
-                        type="System.String",
-                        data=ComputeInputArchive(
-                            primary="L2",
-                            attributes=RequestAttributes(
-                                types=SpatialTypology.from_file(
-                                    "/Users/andrewastakhov/PycharmProjects/mmodel/dumps/L2.json"),
-                                masks=[Mask3dm(
-                                    primary="stage",
-                                    attributes=Mask3dmAttributes.from_file(
-                                        "/Users/andrewastakhov/PycharmProjects/mmodel/lahta/data/L2cutmask.3dm")
-                                )
-                                ],
-                                grid=openarchive()
-
-                            )
-                        ).json()
-                    )
-                ]
-            }
-        )
-    ]
-)
 
 
 def do_request(path="example.json", **kwargs):
@@ -100,21 +63,80 @@ def do_request(path="example.json", **kwargs):
         data = json.load(fl)
         if kwargs:
             data |= kwargs
-        resp = requests.post("http://79.143.24.242:8080/grasshopper", json=data, headers={
+        resp = requests.post(f"{os.getenv('RHINO_COMPUTE_URL')}/grasshopper", json=data, headers={
             "User-Agent": "compute.rhino3d.py/1.2.0",
             "Accept": "application/json",
-            "RhinoComputeKey": "84407047-8380-441c-9c76-a07ca394b88e",
+            "RhinoComputeKey": os.getenv('RHINO_COMPUTE_APIKEY'),
         })
     # js = resp.json()
     return json.loads(json.loads(list(resp.json()["values"][0]['InnerTree'].values())[0][0]["data"]))
 
 
-data = do_request()
-binded = MultiDescriptor(data)
-geom = rhino.DecodeToCommonObject(binded["geometry"])
-
-
 def writerh(bind_sequence, name="modeltest.3dm"):
     model = rhino3dm.File3dm()
     [model.Objects.Add(g) for g in bind_sequence["textdot"] + bind_sequence["geometry"]]
-    model.Write(name, 7)
+    return model
+
+
+import json
+
+import rhino3dm
+from mmcore.collection.multi_description import MultiDescriptor, traverse
+from collections import namedtuple, Counter
+
+ColorARGB = namedtuple("ColorARGB", ["a", "r", "g", "b"])
+
+
+@traverse
+def dd(data):
+    if "archive3dm" in data.keys():
+        data["archive3dm"] = 70
+        return rhino3dm.GeometryBase.Decode(data)
+
+
+@traverse
+def colors(color): return ColorARGB(*eval(color))
+
+
+model = rhino3dm.File3dm()
+
+
+@traverse
+def write_rh(bind):
+    txt = rhino3dm.TextDot(bind['tag'], rhino3dm.Point3d(*eval(bind['center'])))
+    attrs = rhino3dm.ObjectAttributes()
+    attrs.ObjectColor = tuple(bind['color'])
+    attrs.ColorSource = rhino3dm.ObjectColorSource.ColorFromObject
+
+    attrs2 = rhino3dm.ObjectAttributes()
+    attrs2.ObjectColor = (70, 70, 70, 255) if bind['subtype'] == "1" else (170, 70, 20, 255)
+    attrs2.ColorSource = rhino3dm.ObjectColorSource.ColorFromObject
+
+    model.Objects.Add(bind['geometry'], attrs2)
+    model.Objects.Add(txt, attrs)
+
+
+def aaa():
+    with open("/Users/andrewastakhov/PycharmProjects/mmodel/dumps/b1.json", "r") as f:
+        daga = json.load(f)
+
+    bind = MultiDescriptor(daga)
+    # d = list(dd(bind["geometry"]))
+    # bind["geometry"] = d
+
+    bind["color"] = list(colors(bind["color"]))
+    d = list(dd(bind["geometry"]))
+    bind["geometry"] = d
+
+    write_rh(bind)
+    model.Write("data/b1.3dm", 7)
+
+    def area(f):
+        for i, v in f.items():
+            yield i, v * 0.18
+
+    import pandas as pd
+    f = Counter(bind["tag"])
+    ddf = pd.DataFrame([dict(f), dict(area(f))]).T
+
+    ddf.to_csv("data/b1.csv")
